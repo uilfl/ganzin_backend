@@ -36,6 +36,9 @@ class GazeEvent:
     gaze_y: float
     confidence: float
     aoi_id: Optional[str] = None
+    # Saccade-specific metrics
+    amplitude: Optional[float] = None  # Distance in pixels
+    velocity: Optional[float] = None   # Pixels per second
 
 class FixationDetector:
     """
@@ -129,7 +132,7 @@ class FixationDetector:
         )
     
     def _create_saccade_event(self, samples: List[GazeSample]) -> Optional[GazeEvent]:
-        """Create saccade event from samples"""
+        """Create saccade event from samples with velocity and amplitude"""
         if len(samples) < 2:
             return None
         
@@ -138,14 +141,25 @@ class FixationDetector:
         end_sample = samples[-1]
         avg_confidence = sum(s.confidence for s in samples) / len(samples)
         
+        # Calculate amplitude (distance between start and end points)
+        dx = end_sample.x - start_sample.x
+        dy = end_sample.y - start_sample.y
+        amplitude = math.sqrt(dx**2 + dy**2)  # Euclidean distance in pixels
+        
+        # Calculate velocity (amplitude / duration)
+        duration_ms = end_sample.timestamp - start_sample.timestamp
+        velocity = amplitude / (duration_ms / 1000.0) if duration_ms > 0 else 0.0  # pixels/second
+        
         return GazeEvent(
             event_type='saccade',
             start_ts=start_sample.timestamp,
             end_ts=end_sample.timestamp,
-            duration_ms=end_sample.timestamp - start_sample.timestamp,
+            duration_ms=duration_ms,
             gaze_x=(start_sample.x + end_sample.x) / 2,
             gaze_y=(start_sample.y + end_sample.y) / 2,
-            confidence=avg_confidence
+            confidence=avg_confidence,
+            amplitude=amplitude,
+            velocity=velocity
         )
 
 class AOIMapper:

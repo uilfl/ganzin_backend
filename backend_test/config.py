@@ -49,7 +49,7 @@ class DatabaseConfig:
 @dataclass
 class SolSDKConfig:
     """Sol SDK configuration with connection validation"""
-    default_address: str = "192.168.1.117"
+    default_address: str = "10.0.1.12"
     default_port: int = 8080
     rtsp_port: int = 8086
     connection_timeout: float = 2.0

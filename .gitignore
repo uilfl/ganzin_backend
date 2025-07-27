@@ -2,4 +2,9 @@ claude.md
 product_documents
 sol_sdk v1.1.1 docs
 examples/
-backend_test/ganzin_sol_sdk-1.1.1-py3-none-any.whl
+backend_test/
+holistic_testing_plan.md
+project_status_report.md
+Sol_glasses_data_export_info_graphics.pdf
+Sol_Glasses_Data_Export_Information.pdf
+_pycache_

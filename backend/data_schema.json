@@ -1,0 +1,35 @@
+{
+  "GazePoint": {
+    "timestamp": "number (ms)",
+    "gaze_valid": "number (0/1)",
+    "gaze_pos_x": "number (2D px)",
+    "gaze_pos_y": "number (2D px)",
+    "combined_3d_gaze_valid": "number (0/1)",
+    "combined_3d_gaze_pos_x": "number (mm)",
+    "combined_3d_gaze_pos_y": "number (mm)",
+    "combined_3d_gaze_pos_z": "number (mm)",
+    "combined_3d_gaze_dir_x": "number",
+    "combined_3d_gaze_dir_y": "number",
+    "combined_3d_gaze_dir_z": "number",
+    "left_pupil_size": "number (mm)",
+    "right_pupil_size": "number (mm)"
+  },
+  "AOIElement": {
+    "id": "string",
+    "x": "number (px)",
+    "y": "number (px)",
+    "width": "number (px)",
+    "height": "number (px)"
+  },
+  "HitLog": {
+    "gaze_timestamp": "number",
+    "aoi_id": "string",
+    "hit_type": "string (2d|3d|both)"
+  },
+  "CalibrationSample": {
+    "gaze_x": "number (0-1)",
+    "gaze_y": "number (0-1)",
+    "screen_x": "number (px)",
+    "screen_y": "number (px)"
+  }
+}

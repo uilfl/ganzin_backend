@@ -43,42 +43,36 @@ class GazePoint:
     calibrated_y: Optional[float] = None  # Screen-calibrated Y coordinate
     
     @classmethod
-    def from_sol_sdk(cls, sol_gaze_data, timestamp: Optional[float] = None) -> 'GazePoint':
+    def from_sol_sdk(cls, gaze_data: 'GazeData', timestamp: Optional[float] = None) -> 'GazePoint':
         """
-        Create GazePoint from Sol SDK gaze data structure
+        Create GazePoint from Sol SDK GazeData using debug_datacollector.md mapping
         
         Args:
-            sol_gaze_data: Raw gaze data from Sol SDK
+            gaze_data: GazeData object from Sol SDK streaming
             timestamp: Optional timestamp override
         
         Returns:
             GazePoint instance
         """
-        current_time = timestamp or time.time()
-        
-        # Extract 2D gaze data
-        gaze_2d = sol_gaze_data.combined.gaze_2d
-        gaze_3d = sol_gaze_data.combined.gaze_3d
-        
-        # Extract pupil data
-        left_pupil = getattr(sol_gaze_data.left, 'pupil_size', 0.0)
-        right_pupil = getattr(sol_gaze_data.right, 'pupil_size', 0.0)
+        # Use SDK timestamp or current time
+        current_time = timestamp or gaze_data.timestamp
         
         return cls(
+            # Direct mapping from debug_datacollector.md
             timestamp=current_time,
-            gaze_valid=int(gaze_2d.valid),
-            gaze_pos_x=float(gaze_2d.x),
-            gaze_pos_y=float(gaze_2d.y),
-            combined_3d_gaze_valid=int(gaze_3d.valid),
-            combined_3d_gaze_pos_x=float(gaze_3d.position.x),
-            combined_3d_gaze_pos_y=float(gaze_3d.position.y),
-            combined_3d_gaze_pos_z=float(gaze_3d.position.z),
-            combined_3d_gaze_dir_x=float(gaze_3d.direction.x),
-            combined_3d_gaze_dir_y=float(gaze_3d.direction.y),
-            combined_3d_gaze_dir_z=float(gaze_3d.direction.z),
-            left_pupil_size=float(left_pupil),
-            right_pupil_size=float(right_pupil),
-            confidence=float(gaze_2d.valid)  # Use validity as confidence
+            gaze_valid=1 if gaze_data.combined.gaze_2d.validity else 0,
+            gaze_pos_x=float(gaze_data.combined.gaze_2d.x),
+            gaze_pos_y=float(gaze_data.combined.gaze_2d.y),
+            combined_3d_gaze_valid=1 if gaze_data.combined.gaze_3d.validity else 0,
+            combined_3d_gaze_pos_x=float(gaze_data.combined.gaze_3d.x),
+            combined_3d_gaze_pos_y=float(gaze_data.combined.gaze_3d.y),
+            combined_3d_gaze_pos_z=float(gaze_data.combined.gaze_3d.z),
+            combined_3d_gaze_dir_x=float(gaze_data.left_eye.gaze.direction.x),  # Using left_eye as per doc
+            combined_3d_gaze_dir_y=float(gaze_data.left_eye.gaze.direction.y),
+            combined_3d_gaze_dir_z=float(gaze_data.left_eye.gaze.direction.z),
+            left_pupil_size=float(gaze_data.left_eye.pupil3d.diameter),
+            right_pupil_size=float(gaze_data.right_eye.pupil3d.diameter),
+            confidence=1.0 if gaze_data.combined.gaze_2d.validity else 0.0
         )
     
     @classmethod

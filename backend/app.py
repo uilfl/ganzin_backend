@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
-FastAPI Production Backend Server
-Integrates all testing insights with clean architecture
-Following project_structure.md guidance for frontend integration
+FastAPI Produc# Global managers (following project_structure.md pattern)
 """
 
 import asyncio
 import json
 import time
-from typing import Dict, Any
-from fastapi import FastAPI, Request
+from typing import Dict, Any, Optional
+from fastapi import FastAPI, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 import uvicorn
 
 # Import our managers (following project_structure.md)
@@ -79,12 +78,6 @@ async def get_status():
             "session_id": frontend_data["session"]["session_id"],  
             "total_samples": frontend_data["session"]["total_samples"],
             "duration": frontend_data["session"]["duration"]
-        },
-        
-        # Calibration status (from our testing)
-        "calibration": {
-            "calibrated": frontend_data["calibration"]["calibrated"],
-            "accuracy_px": frontend_data["calibration"]["accuracy_px"]
         },
         
         # Session statistics
@@ -259,148 +252,6 @@ async def get_recent_aoi_hits():
     }
 
 # ==============================================================================
-# CALIBRATION ENDPOINTS (Based on your decision: 前端 UI 流程控制、後端負責計算轉換與保存參數)
-# ==============================================================================
-
-@app.post("/api/calibration/start")
-async def start_calibration():
-    """Start calibration process"""
-    logger.info("🎯 Starting calibration process")
-    
-    # Reset calibration state
-    success = gaze_manager.start_calibration_process()
-    
-    if success:
-        return {
-            "status": "success",
-            "message": "Calibration process started",
-            "points_required": 9,
-            "timestamp": int(time.time() * 1000)
-        }
-    else:
-        return {
-            "status": "error",
-            "message": "Failed to start calibration process",
-            "timestamp": int(time.time() * 1000)
-        }
-
-@app.post("/api/calibration/capture_point")
-async def capture_calibration_point(point_data: dict):
-    """
-    Capture calibration point
-    Frontend sends: {point_index, screen_x, screen_y}
-    Backend captures gaze and stores sample
-    """
-    point_index = point_data.get("point_index", 0)
-    screen_x = point_data.get("screen_x", 0)
-    screen_y = point_data.get("screen_y", 0)
-    
-    logger.info(f"📍 Capturing calibration point {point_index} at ({screen_x}, {screen_y})")
-    
-    # Capture current gaze point
-    success, gaze_data = gaze_manager.capture_calibration_point(point_index, screen_x, screen_y)
-    
-    if success:
-        return {
-            "status": "success",
-            "point_index": point_index,
-            "gaze_captured": gaze_data,
-            "message": f"Point {point_index} captured successfully",
-            "timestamp": int(time.time() * 1000)
-        }
-    else:
-        return {
-            "status": "error",
-            "message": f"Failed to capture point {point_index}",
-            "timestamp": int(time.time() * 1000)
-        }
-
-@app.post("/api/calibration/calculate")
-async def calculate_calibration(calibration_config: dict = None):
-    """
-    Calculate calibration transformation from collected points
-    Backend computes transformation matrix and accuracy
-    
-    Supports both methods:
-    - Homography transformation (preferred, fixes 500px+ errors)
-    - Linear transformation (fallback for compatibility)
-    """
-    method = "homography"  # Default to homography for better accuracy
-    use_opencv = True
-    
-    # Allow frontend to specify calibration method
-    if calibration_config:
-        method = calibration_config.get("method", "homography")
-        use_opencv = calibration_config.get("use_opencv", True)
-    
-    logger.info(f"🔢 Calculating calibration transformation using {method} method")
-    
-    if method == "homography":
-        result = gaze_manager.calculate_homography_calibration_transform(use_opencv=use_opencv)
-    else:
-        result = gaze_manager.calculate_calibration_transform()
-    
-    if result["success"]:
-        method_used = result.get("method", "linear")
-        return {
-            "status": "success",
-            "accuracy_px": result["accuracy_px"],
-            "calibration_transform": result["transform"],
-            "points_used": result["points_used"],
-            "method": method_used,
-            "message": f"{method_used.title()} calibration completed with {result['accuracy_px']:.1f}px accuracy",
-            "timestamp": int(time.time() * 1000)
-        }
-    else:
-        return {
-            "status": "error",
-            "message": result["message"],
-            "timestamp": int(time.time() * 1000)
-        }
-
-@app.get("/api/calibration/status")
-async def get_calibration_status():
-    """Get current calibration status"""
-    frontend_data = gaze_manager.get_frontend_data()
-    return {
-        "calibrated": frontend_data["calibration"]["calibrated"],
-        "accuracy_px": frontend_data["calibration"]["accuracy_px"],
-        "transform_loaded": gaze_manager.calibration_transform.get("calibrated", False),
-        "calibration_method": gaze_manager.calibration_transform.get("method", "linear"),
-        "calibration_in_progress": gaze_manager.is_calibrating if hasattr(gaze_manager, 'is_calibrating') else False,
-        "timestamp": int(time.time() * 1000)
-    }
-
-@app.get("/api/calibration/camera_intrinsics")
-async def get_camera_intrinsics():
-    """
-    Get scene camera intrinsic parameters for debugging and validation
-    This endpoint helps verify proper camera parameter retrieval from Sol SDK
-    """
-    logger.info("📷 Retrieving scene camera intrinsic parameters")
-    
-    intrinsics = gaze_manager.get_scene_camera_intrinsics()
-    
-    if intrinsics:
-        return {
-            "status": "success",
-            "camera_intrinsics": intrinsics,
-            "source": intrinsics.get("source", "unknown"),
-            "focal_length": intrinsics.get("focal_length", {}),
-            "principal_point": intrinsics.get("principal_point", {}),
-            "resolution": intrinsics.get("resolution", {}),
-            "message": f"Camera intrinsics retrieved from {intrinsics.get('source', 'unknown')}",
-            "timestamp": int(time.time() * 1000)
-        }
-    else:
-        return {
-            "status": "error",
-            "message": "Failed to retrieve camera intrinsics",
-            "sol_sdk_available": gaze_manager.sync_client is not None,
-            "timestamp": int(time.time() * 1000)
-        }
-
-# ==============================================================================
 # HEALTH AND MONITORING ENDPOINTS  
 # ==============================================================================
 
@@ -441,6 +292,152 @@ async def get_performance_metrics():
     }
 
 # ==============================================================================
+# TEXT-COORDINATE MAPPING ENDPOINTS (For testing our approach)
+# ==============================================================================
+
+@app.post("/api/text/upload")
+async def upload_text_for_mapping(request: Request):
+    """
+    Upload text content for coordinate mapping testing
+    Supports our LLM-based vocabulary tagging approach
+    """
+    try:
+        body = await request.json()
+        text_content = body.get("content", "")
+        title = body.get("title", "Untitled")
+        vocabulary_tags = body.get("vocabulary_tags", [])
+        
+        # Store the text content in gaze manager for AOI creation
+        text_id = f"text_{int(time.time())}"
+        success = gaze_manager.set_text_content(text_id, text_content, vocabulary_tags)
+        
+        if success:
+            return {
+                "status": "success",
+                "text_id": text_id,
+                "title": title,
+                "vocabulary_count": len(vocabulary_tags),
+                "message": "Text uploaded and ready for coordinate mapping"
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Failed to process text content"
+            }
+            
+    except Exception as e:
+        logger.error(f"Text upload error: {e}")
+        return {
+            "status": "error", 
+            "message": f"Upload failed: {str(e)}"
+        }
+
+@app.post("/api/text/create-aois")
+async def create_aois_from_coordinates(aoi_data: dict):
+    """
+    Create AOIs from frontend coordinate mapping
+    This is called after text-coordinate mapping is complete
+    """
+    try:
+        text_id = aoi_data.get("text_id")
+        coordinates = aoi_data.get("coordinates", [])  # Format: [{"word": "...", "bbox": [x,y,w,h]}, ...]
+        
+        success_count = 0
+        for coord in coordinates:
+            word = coord.get("word", "")
+            bbox = coord.get("bbox", [0, 0, 0, 0])
+            
+            aoi_success = gaze_manager.add_text_aoi(
+                word_id=f"{text_id}_{word}",
+                word=word,
+                x=bbox[0],
+                y=bbox[1], 
+                width=bbox[2],
+                height=bbox[3]
+            )
+            
+            if aoi_success:
+                success_count += 1
+        
+        return {
+            "status": "success",
+            "text_id": text_id,
+            "aois_created": success_count,
+            "total_coordinates": len(coordinates),
+            "message": f"Created {success_count} AOIs for vocabulary tracking"
+        }
+        
+    except Exception as e:
+        logger.error(f"AOI creation error: {e}")
+        return {
+            "status": "error",
+            "message": f"AOI creation failed: {str(e)}"
+        }
+
+@app.get("/api/text/vocabulary-hits")
+async def get_vocabulary_hits():
+    """
+    Get real-time vocabulary hits from gaze data
+    Perfect for testing our 800ms fixation detection
+    """
+    frontend_data = gaze_manager.get_frontend_data()
+    
+    # Filter for vocabulary-specific hits
+    vocab_hits = []
+    for hit in frontend_data["aoi_hits"]["recent"]:
+        if hit.get("type") == "vocabulary" or "word" in hit.get("aoi_id", ""):
+            vocab_hits.append({
+                "word": hit.get("word", hit.get("aoi_id", "").replace("_", " ")),
+                "timestamp": hit.get("timestamp", 0),
+                "gaze_x": hit.get("gaze_x", 0),
+                "gaze_y": hit.get("gaze_y", 0),
+                "fixation_duration": hit.get("fixation_duration", 0),
+                "confidence": hit.get("confidence", 0)
+            })
+    
+    return {
+        "vocabulary_hits": vocab_hits,
+        "total_vocabulary_hits": len(vocab_hits),
+        "timestamp": int(time.time() * 1000)
+    }
+
+@app.post("/api/llm/define-vocabulary")
+async def get_vocabulary_definition(request: Request):
+    """
+    Stage 2 LLM: Get vocabulary definition when student needs help
+    Called when 800ms+ fixation is detected on vocabulary
+    """
+    try:
+        body = await request.json()
+        word = body.get("word", "")
+        context = body.get("context", "")
+        user_profile = body.get("user_profile", {})
+        
+        # For now, mock the LLM response (replace with actual LLM API call)
+        definition_response = {
+            "word": word,
+            "definition": f"A comprehensive definition of '{word}' tailored for {user_profile.get('level', 'intermediate')} level students.",
+            "simplified_definition": f"Simple explanation: {word} means...",
+            "example_sentence": f"Here's how to use {word} in a sentence.",
+            "part_of_speech": "noun",  # Would be determined by LLM
+            # no difficulty_explanation here neccessarily, checking our other places parsing this as well.
+            "difficulty_explanation": f"This word might be challenging because...",
+            "learning_tip": "Memory aid or learning strategy here",
+            "synonyms": ["similar", "related", "equivalent"],
+            "response_time": int(time.time() * 1000)
+        }
+        
+        logger.info(f"📚 LLM Stage 2: Provided definition for '{word}'")
+        
+        return definition_response
+        
+    except Exception as e:
+        logger.error(f"LLM definition error: {e}")
+        return {
+            "error": f"Failed to get definition: {str(e)}"
+        }
+
+# ==============================================================================
 # DEVELOPMENT AND DEBUG ENDPOINTS (For frontend testing)
 # ==============================================================================
 
@@ -476,10 +473,10 @@ if __name__ == "__main__":
     print("=� Port: 8000 (production)")
     print("= Frontend Integration Ready")
     print("=� Endpoints:")
-    print("   " Status: http://localhost:8000/api/status")
-    print("   " Stream: http://localhost:8000/api/gaze/stream")
-    print("   " Health: http://localhost:8000/api/health")
-    print("   " Debug: http://localhost:8000/api/debug/info")
+    print("  Status: http://localhost:8000/api/status")
+    print("  Stream: http://localhost:8000/api/gaze/stream")
+    print("  Health: http://localhost:8000/api/health")
+    print("  Debug: http://localhost:8000/api/debug/info")
     print("=� Press Ctrl+C to stop")
     print("-" * 60)
     

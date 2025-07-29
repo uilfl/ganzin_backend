@@ -25,11 +25,5 @@
     "gaze_timestamp": "number",
     "aoi_id": "string",
     "hit_type": "string (2d|3d|both)"
-  },
-  "CalibrationSample": {
-    "gaze_x": "number (0-1)",
-    "gaze_y": "number (0-1)",
-    "screen_x": "number (px)",
-    "screen_y": "number (px)"
   }
 }

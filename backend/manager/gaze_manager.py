@@ -18,12 +18,14 @@ sys.path.append(os.path.abspath(os.path.join(current_dir, '../..')))
 sys.path.append(os.path.abspath(os.path.join(current_dir, '../../examples')))
 
 try:
-    # DIRECT imports from official examples
+    # DIRECT imports from debug_datacollector.md patterns
     from utils.server_info import get_ip_and_port
     from ganzin.sol_sdk.synchronous.models import StreamingMode
     from ganzin.sol_sdk.synchronous.sync_client import SyncClient
+    from ganzin.sol_sdk.streaming.gaze_stream import GazeData
     from ganzin.sol_sdk.responses import CaptureResult
     from ganzin.sol_sdk.requests import AddTagRequest, TagColor
+    from ganzin.sol_sdk.common_models import ApiStatus
     SOL_SDK_AVAILABLE = True
 except ImportError:
     print("Warning: Sol SDK not available, using mock mode")
@@ -58,9 +60,6 @@ class GazeDataManager:
         self.session_start_time: Optional[float] = None
         self.total_samples = 0
         
-        # Calibration (from our testing)
-        self.calibration_transform = self._load_calibration()
-        
         # Real-time data for frontend
         self.current_gaze: Optional[GazePoint] = None
         self.recent_hits: List[HitLog] = []
@@ -68,27 +67,13 @@ class GazeDataManager:
         self.cognitive_load_history: List[Dict] = []
         self.vocabulary_discoveries: List[str] = []
         
-        # Calibration state management (following your decision: 後端負責計算轉換與保存參數)
-        self.is_calibrating = False
-        self.calibration_points = []  # Store calibration samples
+        # Text-coordinate mapping support for testing our approach
+        self.current_text_content = {}  # {text_id: {"content": "...", "vocabulary_tags": [...]}}
+        self.text_aois = {}  # {word_id: {"word": "...", "bbox": [x,y,w,h], "text_id": "..."}}
+        self.vocabulary_hits = []  # Recent vocabulary hits for frontend testing
         
         # Initialize AOIs
         self.aoi_collection.create_standard_lesson_aois()
-    
-    def _load_calibration(self) -> Dict:
-        """Load calibration from testing phase"""
-        try:
-            calibration_file = os.path.join(os.path.dirname(__file__), '../../backend_test/sol_glasses_calibration.json')
-            with open(calibration_file, 'r') as f:
-                calibration_data = json.load(f)
-            print(f"✅ Loaded calibration: {calibration_data['transform']['accuracy_px']:.1f}px accuracy")
-            return calibration_data['transform']
-        except FileNotFoundError:
-            print("⚠️ No calibration file found")
-            return {"scale_x": 1.0, "scale_y": 1.0, "offset_x": 0.0, "offset_y": 0.0, "calibrated": False}
-        except Exception as e:
-            print(f"❌ Failed to load calibration: {e}")
-            return {"scale_x": 1.0, "scale_y": 1.0, "offset_x": 0.0, "offset_y": 0.0, "calibrated": False}
     
     def start_streaming_session(self, session_id: str) -> bool:
         """
@@ -167,9 +152,6 @@ class GazeDataManager:
         # Create GazePoint from exact SDK structure
         gaze_point = GazePoint.from_sol_sdk(gaze)
         
-        # Apply calibration
-        gaze_point.apply_calibration_transform(self.calibration_transform)
-        
         # Update current gaze
         self.current_gaze = gaze_point
         
@@ -236,7 +218,7 @@ class GazeDataManager:
         - distortion: distortion coefficients for lens correction
         - resolution: scene camera resolution for coordinate mapping
         """
-        if not self.sync_client or not SOL_SDK_AVAILABLE:
+        if not SOL_SDK_AVAILABLE:
             print("⚠️ Sol SDK not available, returning mock camera parameters")
             # Return mock parameters for testing homography transformation
             return {
@@ -248,12 +230,32 @@ class GazeDataManager:
                 "source": "mock_data"
             }
         
+        # Create sync client for camera intrinsics if not already available
+        sync_client = self.sync_client
+        if not sync_client:
+            try:
+                address, port = get_ip_and_port()
+                sync_client = SyncClient(address, port)
+                print(f"📡 Created temporary Sol SDK connection to {address}:{port}")
+            except Exception as e:
+                print(f"❌ Failed to create Sol SDK connection: {e}")
+                print("⚠️ Sol SDK connection failed, returning mock camera parameters")
+            # Return mock parameters for testing homography transformation
+            return {
+                "intrinsic": [[800.0, 0.0, 400.0], [0.0, 800.0, 300.0], [0.0, 0.0, 1.0]],
+                "distortion": [0.0, 0.0, 0.0, 0.0, 0.0],
+                "resolution": {"width": 800, "height": 600},
+                "focal_length": {"fx": 800.0, "fy": 800.0},
+                "principal_point": {"cx": 400.0, "cy": 300.0},
+                "source": "mock_data"
+            }
+        
         try:
-            # Step 2: 取得 camera param (following your pattern)
-            resp = self.sync_client.get_scene_camera_param()
+            # 以同步客戶端為例 (following your exact pattern)
+            resp = sync_client.get_scene_camera_param()
             
-            # Step 3: 檢查 status & 取出參數 (following your pattern)
-            if resp.status.code == 0:  # 0 usually means success
+            if resp.status == ApiStatus.SUCCESS and resp.result:
+                print("✅ 成功獲取 Intrinsic Data:", resp.result.camera_param.intrinsic)
                 cam_param = resp.result.camera_param
                 
                 print("📷 Scene camera intrinsic:", cam_param.intrinsic)
@@ -289,12 +291,38 @@ class GazeDataManager:
                 return camera_intrinsics
                 
             else:
-                print(f"❌ Get scene camera param failed: {resp.status.message}")
-                return None
+                print(f"❌ 獲取 Intrinsic Data 失敗。")
+                print(f"📋 後端狀態: {resp.status}")
+                print(f"🔍 後端訊息: {resp.message}")  # <--- 這個訊息最關鍵！
+                print("⚠️ Fallback to mock data...")
+                
+                # Return mock parameters for testing homography transformation
+                return {
+                    "intrinsic": [[800.0, 0.0, 400.0], [0.0, 800.0, 300.0], [0.0, 0.0, 1.0]],
+                    "distortion": [0.0, 0.0, 0.0, 0.0, 0.0],
+                    "resolution": {"width": 800, "height": 600},
+                    "focal_length": {"fx": 800.0, "fy": 800.0},
+                    "principal_point": {"cx": 400.0, "cy": 300.0},
+                    "source": "mock_data_after_api_failure"
+                }
             
         except Exception as e:
-            print(f"❌ Failed to get camera parameters: {e}")
-            return None
+            print(f"❌ Failed to get camera parameters from Sol Glasses: {e}")
+            print("📋 This usually means:")
+            print("   1. Sol Glasses hardware not fully initialized")
+            print("   2. Camera service not ready on glasses") 
+            print("   3. Need to start streaming session first")
+            print("⚠️ Falling back to mock camera parameters for testing")
+            
+            # Return mock parameters for testing homography transformation
+            return {
+                "intrinsic": [[800.0, 0.0, 400.0], [0.0, 800.0, 300.0], [0.0, 0.0, 1.0]],
+                "distortion": [0.0, 0.0, 0.0, 0.0, 0.0],
+                "resolution": {"width": 800, "height": 600},
+                "focal_length": {"fx": 800.0, "fy": 800.0},
+                "principal_point": {"cx": 400.0, "cy": 300.0},
+                "source": "mock_data_after_connection_error"
+            }
     
     def add_aoi_hit_tag(self, aoi_id: str, description: str = "") -> bool:
         """
@@ -320,6 +348,26 @@ class GazeDataManager:
             print(f"❌ Failed to add tag: {e}")
             return False
     
+    def _check_hit_debug_pattern(self, gaze_point: dict, aois: list) -> list:
+        """
+        AOI hit detection following exact debug_datacollector.md pattern
+        檢查 GazePoint 是否落在任何 AOI 內並生成 HitLog
+        """
+        hit_logs = []
+        if gaze_point["gaze_valid"] == 1:
+            px, py = gaze_point["gaze_pos_x"], gaze_point["gaze_pos_y"]
+            for aoi in aois:
+                x_min, y_min = aoi["x"], aoi["y"]
+                x_max, y_max = aoi["x"] + aoi["width"], aoi["y"] + aoi["height"]
+                if x_min <= px < x_max and y_min <= py < y_max:
+                    hit_log = {
+                        "gaze_timestamp": gaze_point["timestamp"],
+                        "aoi_id": aoi["id"],
+                        "hit_type": "2d"
+                    }
+                    hit_logs.append(hit_log)
+        return hit_logs
+
     def _process_aoi_hits(self, gaze_point: GazePoint):
         """Process AOI hits with tag logging"""
         hit_x = gaze_point.calibrated_x or gaze_point.gaze_pos_x
@@ -527,11 +575,7 @@ class GazeDataManager:
             "total_samples": self.total_samples,
             "samples_per_second": self.total_samples / max(duration, 1),
             "aois": self.aoi_collection.to_frontend_format(),
-            "hit_log": self.hit_log_manager.export_session_data() if self.hit_log_manager else {},
-            "calibration": {
-                "calibrated": self.calibration_transform.get("calibrated", False),
-                "accuracy_px": self.calibration_transform.get("accuracy_px", 0)
-            }
+            "hit_log": self.hit_log_manager.export_session_data() if self.hit_log_manager else {}
         }
     
     def get_frontend_data(self) -> dict:
@@ -568,11 +612,7 @@ class GazeDataManager:
                 "connected": self.is_streaming,
                 "vocabulary_count": len(self.vocabulary_discoveries)  # 新增：單字數量
             },
-            "aois": self.aoi_collection.to_frontend_format(),
-            "calibration": {
-                "calibrated": self.calibration_transform.get("calibrated", False),
-                "accuracy_px": self.calibration_transform.get("accuracy_px", 0)
-            }
+            "aois": self.aoi_collection.to_frontend_format()
         }
     
     def add_dynamic_aoi(self, aoi_data: dict) -> bool:
@@ -599,314 +639,107 @@ class GazeDataManager:
             "samples_collected": self.total_samples
         }
     
-    def start_calibration_process(self) -> bool:
-        """
-        Start calibration process
-        Following your decision: 前端 UI 流程控制、後端負責計算轉換與保存參數
-        """
-        self.is_calibrating = True
-        self.calibration_points = []
-        print("🎯 Calibration process started - ready to collect points")
-        return True
+    # ========== TEXT-COORDINATE MAPPING METHODS FOR TESTING ==========
     
-    def capture_calibration_point(self, point_index: int, screen_x: float, screen_y: float) -> tuple[bool, Optional[dict]]:
+    def set_text_content(self, text_id: str, content: str, vocabulary_tags: list) -> bool:
         """
-        Capture calibration point with current gaze data
-        Backend responsibility: Capture and store gaze coordinates
+        Store text content for coordinate mapping testing
+        Called when teacher uploads text content
         """
-        if not self.is_calibrating:
-            return False, None
-        
-        if not self.current_gaze:
-            return False, None
-        
-        # Create calibration sample
-        calibration_sample = {
-            "point_index": point_index,
-            "screen_x": screen_x,
-            "screen_y": screen_y,
-            "gaze_x": self.current_gaze.gaze_pos_x,
-            "gaze_y": self.current_gaze.gaze_pos_y,
-            "confidence": self.current_gaze.confidence,
-            "timestamp": time.time()
-        }
-        
-        self.calibration_points.append(calibration_sample)
-        
-        print(f"📍 Captured point {point_index}: screen({screen_x}, {screen_y}) -> gaze({self.current_gaze.gaze_pos_x:.1f}, {self.current_gaze.gaze_pos_y:.1f})")
-        
-        return True, calibration_sample
-    
-    def calculate_homography_calibration_transform(self, use_opencv: bool = True) -> dict:
-        """
-        Calculate calibration transformation using homography matrix instead of linear scaling
-        This replaces the flawed linear transformation that causes 500px+ errors
-        
-        Args:
-            use_opencv: Whether to use OpenCV for robust homography calculation
-        
-        Returns:
-            Calibration result with homography matrix and accuracy metrics
-        """
-        if len(self.calibration_points) < 4:
-            return {
-                "success": False,
-                "message": f"Need at least 4 points for homography, got {len(self.calibration_points)}"
-            }
-        
         try:
-            # Get camera intrinsics for proper perspective transformation
-            camera_intrinsics = self.get_scene_camera_intrinsics()
-            if not camera_intrinsics:
-                print("⚠️ No camera intrinsics available, falling back to linear transformation")
-                return self._calculate_linear_calibration_fallback()
-            
-            # Extract calibration point pairs
-            scene_points = []  # Gaze coordinates in scene camera space
-            screen_points = []  # Target coordinates in screen space
-            
-            for point in self.calibration_points:
-                scene_points.append([point["gaze_x"], point["gaze_y"]])
-                screen_points.append([point["screen_x"], point["screen_y"]])
-            
-            print(f"🔢 Computing homography with {len(scene_points)} point pairs")
-            print(f"📷 Using camera intrinsics: fx={camera_intrinsics['focal_length']['fx']:.1f}")
-            
-            if use_opencv:
-                # Use OpenCV for robust homography calculation (preferred)
-                homography_matrix, accuracy = self._calculate_opencv_homography(scene_points, screen_points)
-            else:
-                # Use manual homography calculation (fallback)
-                homography_matrix, accuracy = self._calculate_manual_homography(scene_points, screen_points)
-            
-            if homography_matrix is None:
-                print("❌ Homography calculation failed, falling back to linear")
-                return self._calculate_linear_calibration_fallback()
-            
-            # Create transformation dictionary with homography
-            transform = {
-                "method": "homography",
-                "homography_matrix": homography_matrix.tolist() if hasattr(homography_matrix, 'tolist') else homography_matrix,
-                "camera_intrinsics": camera_intrinsics,
-                "accuracy_px": accuracy,
-                "calibrated": True,
-                "points_used": len(self.calibration_points),
-                "timestamp": time.time(),
-                # Keep legacy fields for compatibility
-                "scale_x": 1.0,
-                "scale_y": 1.0, 
-                "offset_x": 0.0,
-                "offset_y": 0.0
+            self.current_text_content[text_id] = {
+                "content": content,
+                "vocabulary_tags": vocabulary_tags,
+                "upload_time": time.time()
             }
-            
-            # Save and apply calibration
-            self.calibration_transform = transform
-            self._save_calibration(transform)
-            self.is_calibrating = False
-            
-            print(f"✅ Homography calibration completed: {accuracy:.1f}px accuracy")
-            
-            return {
-                "success": True,
-                "accuracy_px": accuracy,
-                "transform": transform,
-                "points_used": len(self.calibration_points),
-                "method": "homography"
-            }
-            
+            print(f"📝 Stored text content: {text_id} with {len(vocabulary_tags)} vocabulary tags")
+            return True
         except Exception as e:
-            print(f"❌ Homography calibration failed: {e}")
-            print("⚠️ Falling back to linear calibration")
-            return self._calculate_linear_calibration_fallback()
+            print(f"❌ Failed to store text content: {e}")
+            return False
     
-    def _calculate_opencv_homography(self, scene_points, screen_points):
-        """Calculate homography using OpenCV (robust method)"""
+    def add_text_aoi(self, word_id: str, word: str, x: float, y: float, width: float, height: float) -> bool:
+        """
+        Add AOI for vocabulary word based on frontend coordinate mapping
+        This is called after frontend completes text-coordinate mapping
+        """
         try:
-            import cv2
-            import numpy as np
+            # Store the AOI coordinates for tracking
+            self.text_aois[word_id] = {
+                "word": word,
+                "bbox": [x, y, width, height],
+                "created_time": time.time()
+            }
             
-            # Convert to numpy arrays
-            src_pts = np.array(scene_points, dtype=np.float32)
-            dst_pts = np.array(screen_points, dtype=np.float32)
-            
-            # Calculate homography with RANSAC for robustness
-            homography_matrix, mask = cv2.findHomography(
-                src_pts, dst_pts, 
-                cv2.RANSAC, 
-                ransacReprojThreshold=5.0
+            # Create AOI element for real-time tracking
+            aoi_element = AOIElement(
+                id=word_id,
+                x=x,
+                y=y, 
+                width=width,
+                height=height,
+                category="vocabulary",
+                priority=1.0
             )
             
-            # Calculate accuracy using the homography
-            accuracy_errors = []
-            for i, (scene_pt, screen_pt) in enumerate(zip(scene_points, screen_points)):
-                # Transform scene point to screen coordinates
-                scene_homogeneous = np.array([scene_pt[0], scene_pt[1], 1.0])
-                screen_predicted = homography_matrix @ scene_homogeneous
-                screen_predicted = screen_predicted[:2] / screen_predicted[2]  # Normalize
-                
-                # Calculate error
-                error = np.sqrt((screen_predicted[0] - screen_pt[0])**2 + (screen_predicted[1] - screen_pt[1])**2)
-                accuracy_errors.append(error)
-            
-            avg_accuracy = np.mean(accuracy_errors)
-            print(f"📐 OpenCV homography accuracy: {avg_accuracy:.2f}px (errors: {[f'{e:.1f}' for e in accuracy_errors]})")
-            
-            return homography_matrix, avg_accuracy
-            
-        except ImportError:
-            print("⚠️ OpenCV not available, using manual homography calculation")
-            return self._calculate_manual_homography(scene_points, screen_points)
-        except Exception as e:
-            print(f"❌ OpenCV homography calculation failed: {e}")
-            return None, None
-    
-    def _calculate_manual_homography(self, scene_points, screen_points):
-        """Manual homography calculation (fallback when OpenCV not available)"""
-        try:
-            import numpy as np
-            
-            # Minimum 4 points needed for homography
-            if len(scene_points) < 4:
-                return None, None
-            
-            # Build the equation system Ah = 0 for homography calculation
-            A = []
-            for (x, y), (u, v) in zip(scene_points, screen_points):
-                A.append([-x, -y, -1, 0, 0, 0, x*u, y*u, u])
-                A.append([0, 0, 0, -x, -y, -1, x*v, y*v, v])
-            
-            A = np.array(A)
-            
-            # Solve using SVD
-            _, _, V = np.linalg.svd(A)
-            h = V[-1, :]
-            
-            # Reshape to 3x3 homography matrix
-            homography_matrix = h.reshape((3, 3))
-            
-            # Calculate accuracy
-            accuracy_errors = []
-            for scene_pt, screen_pt in zip(scene_points, screen_points):
-                scene_homogeneous = np.array([scene_pt[0], scene_pt[1], 1.0])
-                screen_predicted = homography_matrix @ scene_homogeneous
-                screen_predicted = screen_predicted[:2] / screen_predicted[2]
-                
-                error = np.sqrt((screen_predicted[0] - screen_pt[0])**2 + (screen_predicted[1] - screen_pt[1])**2)
-                accuracy_errors.append(error)
-            
-            avg_accuracy = np.mean(accuracy_errors)
-            print(f"📐 Manual homography accuracy: {avg_accuracy:.2f}px")
-            
-            return homography_matrix, avg_accuracy
+            self.aoi_collection.add_element(aoi_element)
+            print(f"📍 Added text AOI: {word} at ({x}, {y}) size ({width}x{height})")
+            return True
             
         except Exception as e:
-            print(f"❌ Manual homography calculation failed: {e}")
-            return None, None
+            print(f"❌ Failed to create text AOI: {e}")
+            return False
     
-    def _calculate_linear_calibration_fallback(self) -> dict:
-        """Fallback to linear calibration when homography fails"""
-        print("⚠️ Using linear calibration fallback (less accurate)")
-        return self.calculate_calibration_transform()
-
-    def calculate_calibration_transform(self) -> dict:
+    def _process_vocabulary_hit(self, gaze_point: GazePoint, word_id: str):
         """
-        Calculate calibration transformation matrix
-        Backend responsibility: Compute transformation and save parameters
+        Process vocabulary hit for testing our 800ms fixation approach
+        This simulates the intelligent behavior detection system
         """
-        if len(self.calibration_points) < 4:
-            return {
-                "success": False,
-                "message": f"Need at least 4 points, got {len(self.calibration_points)}"
-            }
-        
         try:
-            # Extract screen and gaze coordinates
-            screen_points = [(p["screen_x"], p["screen_y"]) for p in self.calibration_points]
-            gaze_points = [(p["gaze_x"], p["gaze_y"]) for p in self.calibration_points]
+            word_info = self.text_aois.get(word_id, {})
+            word = word_info.get("word", word_id.replace("_", " "))
             
-            # Calculate transformation using least squares
-            # Simple linear transformation: screen = scale * gaze + offset
-            gaze_x_vals = [p[0] for p in gaze_points]
-            gaze_y_vals = [p[1] for p in gaze_points]
-            screen_x_vals = [p[0] for p in screen_points]
-            screen_y_vals = [p[1] for p in screen_points]
-            
-            # Calculate scale and offset for X
-            if len(set(gaze_x_vals)) > 1:  # Avoid division by zero
-                scale_x = (max(screen_x_vals) - min(screen_x_vals)) / (max(gaze_x_vals) - min(gaze_x_vals))
-                offset_x = sum(screen_x_vals) / len(screen_x_vals) - scale_x * sum(gaze_x_vals) / len(gaze_x_vals)
-            else:
-                scale_x, offset_x = 1.0, 0.0
-            
-            # Calculate scale and offset for Y
-            if len(set(gaze_y_vals)) > 1:  # Avoid division by zero
-                scale_y = (max(screen_y_vals) - min(screen_y_vals)) / (max(gaze_y_vals) - min(gaze_y_vals))
-                offset_y = sum(screen_y_vals) / len(screen_y_vals) - scale_y * sum(gaze_y_vals) / len(gaze_y_vals)
-            else:
-                scale_y, offset_y = 1.0, 0.0
-            
-            # Calculate accuracy by testing transformation on calibration points
-            errors = []
-            for point in self.calibration_points:
-                predicted_x = point["gaze_x"] * scale_x + offset_x
-                predicted_y = point["gaze_y"] * scale_y + offset_y
-                error = ((predicted_x - point["screen_x"])**2 + (predicted_y - point["screen_y"])**2)**0.5
-                errors.append(error)
-            
-            accuracy_px = sum(errors) / len(errors)
-            
-            # Create transformation dictionary
-            transform = {
-                "scale_x": scale_x,
-                "scale_y": scale_y,
-                "offset_x": offset_x,
-                "offset_y": offset_y,
-                "accuracy_px": accuracy_px,
-                "calibrated": True,
-                "points_used": len(self.calibration_points),
-                "timestamp": time.time()
+            # Create vocabulary hit record for frontend testing
+            vocab_hit = {
+                "word": word,
+                "word_id": word_id,
+                "timestamp": int(time.time() * 1000),
+                "gaze_x": gaze_point.x,
+                "gaze_y": gaze_point.y,
+                "confidence": gaze_point.confidence,
+                "fixation_duration": 850,  # Mock 850ms fixation for testing
+                "type": "vocabulary",
+                "triggered_definition": True  # Flag for LLM Stage 2 call
             }
             
-            # Save calibration
-            self.calibration_transform = transform
-            self._save_calibration(transform)
+            # Add to vocabulary hits for frontend consumption
+            self.vocabulary_hits.append(vocab_hit)
             
-            # End calibration process
-            self.is_calibrating = False
+            # Keep only recent hits (last 20)
+            if len(self.vocabulary_hits) > 20:
+                self.vocabulary_hits = self.vocabulary_hits[-20:]
             
-            print(f"✅ Calibration completed: {accuracy_px:.1f}px accuracy using {len(self.calibration_points)} points")
+            # Add to vocabulary discoveries
+            if word not in self.vocabulary_discoveries:
+                self.vocabulary_discoveries.append(word)
             
-            return {
-                "success": True,
-                "accuracy_px": accuracy_px,
-                "transform": transform,
-                "points_used": len(self.calibration_points)
-            }
+            print(f"📚 Vocabulary hit detected: {word} (fixation: 850ms)")
             
         except Exception as e:
-            print(f"❌ Calibration calculation failed: {e}")
-            self.is_calibrating = False
-            return {
-                "success": False,
-                "message": f"Calibration calculation failed: {str(e)}"
-            }
+            print(f"❌ Failed to process vocabulary hit: {e}")
     
-    def _save_calibration(self, transform: dict):
-        """Save calibration to file"""
-        try:
-            calibration_data = {
-                "transform": transform,
-                "calibration_points": self.calibration_points,
-                "created_at": time.time()
-            }
-            
-            calibration_file = os.path.join(os.path.dirname(__file__), '../../backend_test/sol_glasses_calibration.json')
-            os.makedirs(os.path.dirname(calibration_file), exist_ok=True)
-            
-            with open(calibration_file, 'w') as f:
-                json.dump(calibration_data, f, indent=2)
-            
-            print(f"💾 Calibration saved to {calibration_file}")
-            
-        except Exception as e:
-            print(f"❌ Failed to save calibration: {e}")
+    def get_vocabulary_hits_for_frontend(self) -> list:
+        """
+        Get recent vocabulary hits for frontend text-coordinate mapping testing
+        This is used by /api/text/vocabulary-hits endpoint
+        """
+        return self.vocabulary_hits.copy()
+    
+    def clear_text_mapping_data(self):
+        """
+        Clear text mapping data for new session
+        """
+        self.current_text_content.clear()
+        self.text_aois.clear()
+        self.vocabulary_hits.clear()
+        print("🧹 Cleared text mapping data for new session")

@@ -120,6 +120,7 @@ backend_env/
 
 # mkdocs documentation
 /site
+../.DS_Store
 
 # mypy
 .mypy_cache/

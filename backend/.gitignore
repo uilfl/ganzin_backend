@@ -177,3 +177,4 @@ session_*.json
 *.swp
 *.swo
 *~
+backend_test

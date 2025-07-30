@@ -1,0 +1,121 @@
+import cv2
+import numpy as np
+import json
+import asyncio
+import websockets
+
+from face_distance_detector import FaceDistanceDetector
+from utils.server_info import get_ip_and_port
+from ganzin.sol_sdk.asynchronous.async_client import AsyncClient, recv_gaze
+
+clients = set()
+
+async def ws_handler(ws, path=None):
+    clients.add(ws)
+    print("WebSocket client connected")
+    try:
+        await ws.wait_closed()
+    finally:
+        clients.remove(ws)
+        print("WebSocket client disconnected")
+
+async def broadcast(msg):
+    if clients:
+        await asyncio.gather(*(c.send(msg) for c in clients))
+
+async def main():
+    # 臉部距離同步校準
+    detector = FaceDistanceDetector()
+    print("請站到 50cm 處，按 C 校準")
+    if not detector.calibrate():
+        print("校準失敗，退出")
+        return
+
+    address, port = get_ip_and_port()
+    async with AsyncClient(address, port) as ac:
+        # 取得相機參數（僅列印供參考）
+        resp = await ac.get_scene_camera_param()
+        cam = resp.result.camera_param
+        print("[INFO] 相機 intrinsic/distort 取得完畢：")
+        print(cam.intrinsic)
+        print(cam.distort)
+
+        # 開 WebSocket server
+        await websockets.serve(ws_handler, '0.0.0.0', 8765)
+        print('[INFO] WebSocket 伺服器啟動 ws://localhost:8765')
+
+        # 開 Webcam 跑臉距離（async）
+        cap = cv2.VideoCapture(0)
+        latest_dist = None
+        async def poll_distance():
+            nonlocal latest_dist
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    await asyncio.sleep(0.03)
+                    continue
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                faces = detector.face_cascade.detectMultiScale(gray, 1.3, 5)
+                if len(faces) > 0:
+                    _, _, w, _ = faces[0]
+                    latest_dist = detector.calculate_distance(w)
+                await asyncio.sleep(0.03)
+        asyncio.create_task(poll_distance())
+
+        # Main gaze streaming loop
+        nod_count = 0
+        blink_event = 0
+        prev_nod = False
+        prev_pitch = None
+        pitch_threshold = 10  # (度數，可調整)
+        prev_blink_count = None
+        prev_eye_closed = None
+
+        async for data in recv_gaze(ac):
+            if latest_dist is None:
+                continue
+            # 2D gaze (pixel)
+            x_scr = getattr(data, "gaze_pos_x", None)
+            y_scr = getattr(data, "gaze_pos_y", None)
+            if (x_scr is None or y_scr is None) and hasattr(data.combined, "gaze_2d"):
+                x_scr = data.combined.gaze_2d.x
+                y_scr = data.combined.gaze_2d.y
+
+            # Blink 靈敏判斷
+            blink_count = getattr(data, "left_blink_count", None)
+            eye_status = getattr(data, "left_eye_status", None)
+            eye_closed = (eye_status == 'closed')
+            if prev_blink_count is not None and blink_count is not None and blink_count > prev_blink_count:
+                blink_event += 1
+            if prev_eye_closed is not None and prev_eye_closed == False and eye_closed:
+                blink_event += 1
+            prev_blink_count = blink_count
+            prev_eye_closed = eye_closed
+
+            # Nod 靈敏判斷
+            nod = getattr(data.combined, 'nod_detected', False)
+            if nod and not prev_nod:
+                nod_count += 1
+            prev_nod = nod
+            # pitch 補強
+            current_pitch = getattr(data.combined, "head_pitch", None)
+            if prev_pitch is not None and current_pitch is not None:
+                if abs(current_pitch - prev_pitch) > pitch_threshold:
+                    nod_count += 1
+            prev_pitch = current_pitch
+
+            msg = json.dumps({
+                "x": x_scr,
+                "y": y_scr,
+                "dist_cm": latest_dist,
+                "nod_count": nod_count,
+                "blink_count": blink_count,
+                "blink_event": blink_event,
+                "eye_status": eye_status,
+                "pitch": current_pitch
+            })
+            await broadcast(msg)
+
+if __name__ == "__main__":
+    import logging; logging.basicConfig(level=logging.INFO)
+    asyncio.run(main())
